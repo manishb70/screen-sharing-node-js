@@ -1,0 +1,17 @@
+{
+  "name": "screen-sharing",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "express": "^5.1.0",
+    "nanoid": "^5.1.5",
+    "socket.io": "^4.8.1"
+  }
+}

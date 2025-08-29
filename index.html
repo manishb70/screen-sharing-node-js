@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Screen Share - AnyDesk Style</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .btn {
+            transition: all 0.2s ease-in-out;
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        #lobby-view, #room-view, #request-modal-backdrop {
+            display: none;
+        }
+        .user-list-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            border-radius: 8px;
+            transition: background-color 0.2s;
+        }
+        .user-list-item:hover {
+            background-color: #f1f5f9; /* slate-100 */
+        }
+    </style>
+</head>
+<body class="bg-slate-100 text-slate-800 flex items-center justify-center min-h-screen p-4">
+
+    <!-- Lobby View -->
+    <div id="lobby-view" class="w-full max-w-md text-center bg-white p-8 rounded-2xl shadow-xl">
+        <h1 class="text-3xl font-bold mb-2">Screen Share</h1>
+        <p class="text-slate-500 mb-8">Create a room or join an existing one.</p>
+        <div class="space-y-4">
+            <button id="create-room-btn" class="btn w-full bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-3 px-4 rounded-lg">Create New Room</button>
+            <div class="flex items-center space-x-2">
+                <input type="text" id="room-code-input" placeholder="Enter Room Code" class="flex-grow p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:outline-none">
+                <button id="join-room-btn" class="btn bg-sky-500 hover:bg-sky-600 text-white font-bold p-3 rounded-lg">Join</button>
+            </div>
+        </div>
+        <p id="lobby-error" class="text-red-500 mt-4 h-4"></p>
+    </div>
+
+    <!-- Room View -->
+    <div id="room-view" class="w-full max-w-6xl h-[90vh] bg-white rounded-2xl shadow-xl flex flex-col md:flex-row overflow-hidden">
+        <!-- Sidebar -->
+        <div class="w-full md:w-1/4 bg-slate-50 border-r border-slate-200 p-4 flex flex-col">
+            <h2 class="text-xl font-bold mb-2">Room Info</h2>
+            <div class="mb-4">
+                <p class="text-sm text-slate-500">Room Code:</p>
+                <p id="room-code-display" class="font-mono bg-slate-200 text-slate-700 p-2 rounded-md text-center">...</p>
+            </div>
+            <h3 class="text-lg font-bold mb-2 border-t pt-4">Users in Room</h3>
+            <div id="user-list" class="flex-grow overflow-y-auto space-y-2">
+                <!-- User list will be populated here -->
+            </div>
+            <button id="leave-room-btn" class="btn mt-4 w-full bg-rose-500 hover:bg-rose-600 text-white font-bold py-2 px-4 rounded-lg">Leave Room</button>
+        </div>
+        <!-- Main Content -->
+        <div class="flex-grow p-4 flex items-center justify-center bg-slate-100">
+             <div id="video-placeholder" class="text-center text-slate-500">
+                <h2 class="text-2xl font-semibold">Welcome!</h2>
+                <p>Request to view a user's screen from the list on the left.</p>
+            </div>
+            <div class="video-container bg-black rounded-lg overflow-hidden w-full h-full border-4 border-slate-200 shadow-inner hidden">
+                <video id="screen-video" class="w-full h-full" autoplay playsinline></video>
+            </div>
+        </div>
+    </div>
+
+    <!-- Incoming Request Modal -->
+    <div id="request-modal-backdrop" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
+        <div id="request-modal" class="bg-white rounded-lg p-8 shadow-xl text-center">
+            <h2 class="text-xl font-bold mb-4">Screen Share Request</h2>
+            <p class="mb-6">User <strong id="requester-id" class="font-mono">...</strong> wants to view your screen.</p>
+            <div class="space-x-4">
+                <button id="accept-btn" class="btn bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-2 px-6 rounded-lg">Accept</button>
+                <button id="reject-btn" class="btn bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-6 rounded-lg">Reject</button>
+            </div>
+        </div>
+    </div>
+
+
+    <script>
+        const socket = io();
+
+        // Views and Modals
+        const lobbyView = document.getElementById('lobby-view');
+        const roomView = document.getElementById('room-view');
+        const requestModal = document.getElementById('request-modal-backdrop');
+
+        // Lobby Elements
+        const createRoomBtn = document.getElementById('create-room-btn');
+        const joinRoomBtn = document.getElementById('join-room-btn');
+        const roomCodeInput = document.getElementById('room-code-input');
+        const lobbyError = document.getElementById('lobby-error');
+
+        // Room Elements
+        const userList = document.getElementById('user-list');
+        const roomCodeDisplay = document.getElementById('room-code-display');
+        const videoContainer = document.querySelector('.video-container');
+        const videoElement = document.getElementById('screen-video');
+        const videoPlaceholder = document.getElementById('video-placeholder');
+        const leaveRoomBtn = document.getElementById('leave-room-btn');
+
+        // Modal Elements
+        const requesterIdSpan = document.getElementById('requester-id');
+        const acceptBtn = document.getElementById('accept-btn');
+        const rejectBtn = document.getElementById('reject-btn');
+
+        // State
+        let localStream;
+        let peerConnections = {}; // Store multiple peer connections
+        let myId = '';
+        let currentRoom = '';
+        let pendingRequesterId = null;
+
+        const config = {
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        };
+        
+        // --- Init ---
+        lobbyView.style.display = 'block';
+
+        // --- Lobby Logic ---
+
+        createRoomBtn.addEventListener('click', () => {
+            socket.emit('create-room');
+        });
+
+        joinRoomBtn.addEventListener('click', () => {
+            const roomCode = roomCodeInput.value.trim();
+            if (roomCode) {
+                socket.emit('join-room', roomCode);
+            }
+        });
+        
+        leaveRoomBtn.addEventListener('click', () => {
+            location.reload(); // Simple way to reset state and leave room
+        });
+
+        // --- Socket Listeners ---
+
+        socket.on('connect', () => {
+            myId = socket.id;
+        });
+
+        socket.on('room-created', (roomCode) => {
+            currentRoom = roomCode;
+            enterRoom(roomCode);
+        });
+        
+        socket.on('joined-room', (roomCode) => {
+            currentRoom = roomCode;
+            enterRoom(roomCode);
+        });
+
+        socket.on('join-error', (message) => {
+            lobbyError.textContent = message;
+        });
+
+        socket.on('update-user-list', (users) => {
+            updateUserList(users);
+        });
+
+        socket.on('share-request-received', ({ requesterId }) => {
+            pendingRequesterId = requesterId;
+            requesterIdSpan.textContent = requesterId.substring(0, 5) + '...';
+            requestModal.style.display = 'flex';
+        });
+        
+        socket.on('share-rejected', ({ rejecterId }) => {
+            alert(`Your request to view ${rejecterId.substring(0,5)}...'s screen was rejected.`);
+        });
+
+        // --- WebRTC Signaling Listeners ---
+        
+        socket.on('webrtc-offer', async ({ offer, fromId }) => {
+            const pc = createPeerConnection(fromId);
+            await pc.setRemoteDescription(new RTCSessionDescription(offer));
+            
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+
+            socket.emit('webrtc-answer', { answer, toId: fromId });
+        });
+        
+        socket.on('webrtc-answer', async ({ answer, fromId }) => {
+            await peerConnections[fromId].setRemoteDescription(new RTCSessionDescription(answer));
+        });
+
+        socket.on('webrtc-candidate', ({ candidate, fromId }) => {
+            peerConnections[fromId].addIceCandidate(new RTCIceCandidate(candidate));
+        });
+        
+        socket.on('share-stopped', () => {
+             resetVideo();
+        });
+
+
+        // --- UI Functions ---
+
+        function enterRoom(roomCode) {
+            lobbyView.style.display = 'none';
+            roomView.style.display = 'flex';
+            roomCodeDisplay.textContent = roomCode;
+        }
+
+        function updateUserList(users) {
+            userList.innerHTML = '';
+            users.forEach(user => {
+                const userElement = document.createElement('div');
+                userElement.className = 'user-list-item';
+                
+                let idText = user.substring(0, 5) + '...';
+                if (user === myId) {
+                    idText += ' (You)';
+                }
+
+                userElement.innerHTML = `<span class="font-mono text-sm">${idText}</span>`;
+
+                if (user !== myId) {
+                    const requestBtn = document.createElement('button');
+                    requestBtn.textContent = 'View';
+                    requestBtn.className = 'btn text-xs bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold py-1 px-2 rounded';
+                    requestBtn.onclick = () => {
+                        socket.emit('request-share', { targetId: user });
+                        alert(`Request sent to ${idText}`);
+                    };
+                    userElement.appendChild(requestBtn);
+                }
+                userList.appendChild(userElement);
+            });
+        }
+        
+        function resetVideo() {
+            if(localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+            }
+            Object.values(peerConnections).forEach(pc => pc.close());
+            peerConnections = {};
+            videoElement.srcObject = null;
+            videoContainer.classList.add('hidden');
+            videoPlaceholder.classList.remove('hidden');
+        }
+
+        // --- Request Modal Logic ---
+
+        acceptBtn.addEventListener('click', async () => {
+            if (!pendingRequesterId) return;
+
+            requestModal.style.display = 'none';
+            try {
+                localStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+                videoPlaceholder.classList.add('hidden');
+                videoContainer.classList.remove('hidden');
+                videoElement.srcObject = localStream; // Show own screen
+                videoElement.muted = true;
+
+                const pc = createPeerConnection(pendingRequesterId, localStream);
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+
+                socket.emit('webrtc-offer', { offer, toId: pendingRequesterId });
+                
+            } catch (err) {
+                console.error("Screen capture error:", err);
+                resetVideo();
+            } finally {
+                pendingRequesterId = null;
+            }
+        });
+        
+        rejectBtn.addEventListener('click', () => {
+            if (pendingRequesterId) {
+                socket.emit('reject-share', { requesterId: pendingRequesterId });
+            }
+            requestModal.style.display = 'none';
+            pendingRequesterId = null;
+        });
+
+        // --- WebRTC Core Logic ---
+        
+        function createPeerConnection(targetId, stream = null) {
+            const pc = new RTCPeerConnection(config);
+            peerConnections[targetId] = pc;
+
+            if (stream) {
+                 stream.getTracks().forEach(track => pc.addTrack(track, stream));
+            } else {
+                pc.ontrack = (event) => {
+                    videoPlaceholder.classList.add('hidden');
+                    videoContainer.classList.remove('hidden');
+                    videoElement.srcObject = event.streams[0];
+                    videoElement.muted = false;
+                };
+            }
+
+            pc.onicecandidate = (event) => {
+                if (event.candidate) {
+                    socket.emit('webrtc-candidate', { candidate: event.candidate, toId: targetId });
+                }
+            };
+            
+            pc.onconnectionstatechange = () => {
+                if(pc.connectionState === 'disconnected' || pc.connectionState === 'closed' || pc.connectionState === 'failed') {
+                    resetVideo();
+                    socket.emit('stop-sharing', { room: currentRoom });
+                }
+            }
+            
+            return pc;
+        }
+
+    </script>
+</body>
+</html>
+
