@@ -10,10 +10,21 @@ const io = socketIo(server);
 
 const PORT = process.env.PORT || 3000;
 
-// Serve the HTML file
+// Serve static files (if any, not strictly needed for this setup)
+app.use(express.static(path.join(__dirname)));
+
+// --- NEW ---
+// This route handles direct links to rooms. It serves the main HTML file,
+// and the client-side JavaScript will handle the rest.
+app.get('/room/:roomCode', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+// The main route still serves the HTML file for the lobby.
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
+
 
 // In-memory store for rooms
 // Now stores an array of user objects {id, username}
@@ -76,7 +87,7 @@ io.on('connection', (socket) => {
     socket.on('reject-control', ({ requesterId }) => {
          const targetSocket = io.sockets.sockets.get(requesterId);
         if(targetSocket) {
-            console.log(`${socket.username} rejected control from ${requesterId}`);
+            console.log(`${socket.username} rejected control from ${targetSocket.username}`);
             targetSocket.emit('control-rejected', { rejecterUsername: socket.username });
         }
     });
@@ -144,4 +155,5 @@ io.on('connection', (socket) => {
 server.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`);
 });
+
 

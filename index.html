@@ -27,7 +27,7 @@
             align-items: center;
             padding: 8px 12px;
             border-radius: 8px;
-            transition: background-color 0.2s;
+            transition:  0.2s;
         }
         .user-list-item:hover {
             background-color: #f1f5f9; /* slate-100 */
@@ -80,7 +80,7 @@
     <!-- Lobby View -->
     <div id="lobby-view" class="w-full max-w-md text-center bg-white p-8 rounded-2xl shadow-xl">
         <h1 class="text-3xl font-bold mb-2">Screen Share</h1>
-        <p class="text-slate-500 mb-8">Create a room or join an existing one.</p>
+        <p class="text-slate-500 mb-8" id="lobby-subtitle">Create a room or join an existing one.</p>
         <div class="space-y-4">
             <input type="text" id="username-input" placeholder="Enter Your Name" class="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:outline-none">
             <button id="create-room-btn" class="btn w-full bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-3 px-4 rounded-lg">Create New Room</button>
@@ -99,7 +99,12 @@
             <h2 class="text-xl font-bold mb-2">Room Info</h2>
             <div class="mb-4">
                 <p class="text-sm text-slate-500">Room Code:</p>
-                <p id="room-code-display" class="font-mono bg-slate-200 text-slate-700 p-2 rounded-md text-center">...</p>
+                <div class="flex items-center space-x-2">
+                    <p id="room-code-display" class="font-mono bg-slate-200 text-slate-700 p-2 rounded-md text-center flex-grow">...</p>
+                    <button id="share-link-btn" title="Copy Invite Link" class="btn bg-gray-300 hover:bg-gray-400 p-2 rounded-md">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                    </button>
+                </div>
             </div>
             <h3 class="text-lg font-bold mb-2 border-t pt-4">Users in Room</h3>
             <div id="user-list" class="overflow-y-auto space-y-2">
@@ -182,10 +187,12 @@
         const joinRoomBtn = document.getElementById('join-room-btn');
         const roomCodeInput = document.getElementById('room-code-input');
         const lobbyError = document.getElementById('lobby-error');
+        const lobbySubtitle = document.getElementById('lobby-subtitle');
 
         // Room Elements
         const userList = document.getElementById('user-list');
         const roomCodeDisplay = document.getElementById('room-code-display');
+        const shareLinkBtn = document.getElementById('share-link-btn');
         const videoContainer = document.querySelector('.video-container');
         const videoElement = document.getElementById('screen-video');
         const videoPlaceholder = document.getElementById('video-placeholder');
@@ -226,7 +233,22 @@
         const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
         
         // --- Init ---
-        lobbyView.style.display = 'block';
+        function handleUrlRoomCode() {
+            const path = window.location.pathname;
+            const parts = path.split('/');
+            if (parts.length === 3 && parts[1] === 'room') {
+                const roomCode = parts[2];
+                roomCodeInput.value = roomCode;
+                roomCodeInput.readOnly = true;
+                lobbySubtitle.textContent = "You've been invited to a room. Enter your name to join.";
+                createRoomBtn.style.display = 'none'; // Hide create button
+            }
+        }
+
+        window.onload = () => {
+            lobbyView.style.display = 'block';
+            handleUrlRoomCode();
+        };
 
         // --- Lobby Logic ---
         function handleLobbyAction(action) {
@@ -248,9 +270,23 @@
 
         createRoomBtn.addEventListener('click', () => handleLobbyAction('create'));
         joinRoomBtn.addEventListener('click', () => handleLobbyAction('join'));
-        leaveRoomBtn.addEventListener('click', () => location.reload());
+        leaveRoomBtn.addEventListener('click', () => {
+            window.location.href = '/';
+        });
         
-        // --- Fullscreen Logic ---
+        shareLinkBtn.addEventListener('click', () => {
+            const shareUrl = `${window.location.origin}/room/${currentRoom}`;
+            navigator.clipboard.writeText(shareUrl).then(() => {
+                const originalContent = shareLinkBtn.innerHTML;
+                shareLinkBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-green-500"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>`;
+                setTimeout(() => {
+                    shareLinkBtn.innerHTML = originalContent;
+                }, 2000);
+            }).catch(err => {
+                console.error('Failed to copy: ', err);
+            });
+        });
+        
         fullscreenBtn.addEventListener('click', () => {
             if (!document.fullscreenElement) {
                 videoContainer.requestFullscreen().catch(err => alert(`Error: ${err.message}`));
@@ -266,9 +302,16 @@
 
         // --- Socket Listeners ---
         socket.on('connect', () => { myId = socket.id; });
-        socket.on('room-created', (roomCode) => { currentRoom = roomCode; enterRoom(roomCode); });
+        socket.on('room-created', (roomCode) => { 
+            currentRoom = roomCode; 
+            window.history.pushState({}, '', `/room/${roomCode}`);
+            enterRoom(roomCode); 
+        });
         socket.on('joined-room', (roomCode) => { currentRoom = roomCode; enterRoom(roomCode); });
-        socket.on('join-error', (message) => { lobbyError.textContent = message; });
+        socket.on('join-error', (message) => { 
+            lobbyError.textContent = message;
+            roomCodeInput.readOnly = false;
+        });
         socket.on('update-user-list', (users) => updateUserList(users));
         socket.on('share-request-received', ({ requesterId, requesterUsername }) => {
             pendingShareRequesterId = requesterId;
@@ -285,12 +328,14 @@
             requestControlModal.style.display = 'flex';
         });
         socket.on('control-accepted', ({targetId}) => {
+            console.log('Control accepted! I can now control', targetId);
             iAmControlling = true;
             controlStatus.textContent = "You have control.";
             requestControlBtn.disabled = true;
         });
         socket.on('control-rejected', ({ rejecterUsername }) => {
             alert(`${rejecterUsername} rejected your control request.`);
+            controlStatus.textContent = "";
         });
 
         // --- WebRTC Listeners ---
@@ -341,6 +386,7 @@
             }
             Object.values(peerConnections).forEach(pc => pc.close());
             peerConnections = {};
+            dataChannels = {}; // FIX: Clear data channels on reset
             videoElement.srcObject = null;
             videoContainer.classList.add('hidden');
             viewerControls.classList.add('hidden');
@@ -417,6 +463,7 @@
 
         // --- WebRTC Core Logic ---
         function createPeerConnection(targetId, stream = null) {
+            console.log(`Creating peer connection to ${targetId}`);
             const pc = new RTCPeerConnection(config);
             peerConnections[targetId] = pc;
             
@@ -424,11 +471,15 @@
                 stream.getTracks().forEach(track => pc.addTrack(track, stream));
                 pc.ondatachannel = (event) => {
                     const dc = event.channel;
+                    console.log(`Data channel received from ${targetId}`);
                     dataChannels[targetId] = dc;
+                    dc.onopen = () => console.log(`Data channel to ${targetId} is open.`);
+                    dc.onclose = () => console.log(`Data channel to ${targetId} is closed.`);
                     dc.onmessage = (e) => handleControlMessage(JSON.parse(e.data));
                 };
             } else { // Viewer's side
                 pc.ontrack = (event) => {
+                    console.log('Remote track received from', targetId);
                     videoPlaceholder.classList.add('hidden');
                     videoContainer.classList.remove('hidden');
                     viewerControls.classList.remove('hidden');
@@ -436,12 +487,18 @@
                 };
                 const dc = pc.createDataChannel('controls');
                 dataChannels[targetId] = dc;
+                dc.onopen = () => console.log(`Data channel to ${targetId} is open.`);
+                dc.onclose = () => console.log(`Data channel to ${targetId} is closed.`);
+                dc.onerror = (err) => console.error(`Data channel error with ${targetId}:`, err);
             }
             
             pc.onicecandidate = (event) => {
-                if (event.candidate) socket.emit('webrtc-candidate', { candidate: event.candidate, toId: targetId });
+                if (event.candidate) {
+                    socket.emit('webrtc-candidate', { candidate: event.candidate, toId: targetId });
+                }
             };
             pc.onconnectionstatechange = () => {
+                console.log(`Peer connection state for ${targetId}: ${pc.connectionState}`);
                 if (['disconnected', 'closed', 'failed'].includes(pc.connectionState)) {
                     resetVideo();
                     socket.emit('stop-sharing', { room: currentRoom });
@@ -452,6 +509,7 @@
 
         // --- Remote Control Logic ---
         function handleControlMessage({ type, x, y }) {
+            // console.log('Received control message:', { type, x, y }); // Uncomment for very verbose logging
             remoteCursor.classList.remove('hidden');
             const videoRect = videoContainer.getBoundingClientRect();
             remoteCursor.style.left = `${x * videoRect.width}px`;
@@ -461,7 +519,9 @@
         }
 
         function sendControlEvent(e) {
-            if (!iAmControlling || !dataChannels[currentSharerId]) return;
+            if (!iAmControlling || !dataChannels[currentSharerId] || dataChannels[currentSharerId].readyState !== 'open') {
+                return;
+            }
             const rect = e.target.getBoundingClientRect();
             const x = (e.clientX - rect.left) / rect.width;
             const y = (e.clientY - rect.top) / rect.height;
