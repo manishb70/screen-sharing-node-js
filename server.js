@@ -13,7 +13,6 @@ const PORT = process.env.PORT || 3000;
 // Serve static files (if any, not strictly needed for this setup)
 app.use(express.static(path.join(__dirname)));
 
-// --- NEW ---
 // This route handles direct links to rooms. It serves the main HTML file,
 // and the client-side JavaScript will handle the rest.
 app.get('/room/:roomCode', (req, res) => {
@@ -47,10 +46,15 @@ io.on('connection', (socket) => {
 
     socket.on('join-room', ({ roomCode, username }) => {
         if (rooms[roomCode]) {
-            rooms[roomCode].push({ id: socket.id, username: username });
+            const user = { id: socket.id, username: username };
+            rooms[roomCode].push(user);
             socket.join(roomCode);
             socket.roomCode = roomCode;
             socket.username = username;
+            
+            // Notify others in the room that a new user has joined
+            socket.to(roomCode).emit('user-joined', user);
+
             socket.emit('joined-room', roomCode);
             io.to(roomCode).emit('update-user-list', rooms[roomCode]);
             console.log(`${username} (${socket.id}) joined room ${roomCode}`);
@@ -72,6 +76,16 @@ io.on('connection', (socket) => {
              targetSocket.emit('share-rejected', { rejecterId: socket.id, rejecterUsername: socket.username });
         }
     });
+
+    // --- NEW: More explicit stop sharing notification ---
+    socket.on('stop-sharing-notification', () => {
+        if (socket.roomCode) {
+            // Let everyone else in the room know the share has stopped
+            socket.to(socket.roomCode).emit('share-stopped');
+            // Also update the user list for everyone to remove the "sharing" icon
+            io.to(socket.roomCode).emit('update-user-list', rooms[socket.roomCode]);
+        }
+    });
     
     // --- Remote Control Flow ---
     socket.on('request-control', ({ targetId }) => {
@@ -87,14 +101,18 @@ io.on('connection', (socket) => {
     socket.on('reject-control', ({ requesterId }) => {
          const targetSocket = io.sockets.sockets.get(requesterId);
         if(targetSocket) {
-            console.log(`${socket.username} rejected control from ${targetSocket.username}`);
+            console.log(`${socket.username} rejected control from ${requesterId}`);
             targetSocket.emit('control-rejected', { rejecterUsername: socket.username });
         }
     });
     
     // --- WebRTC Signaling (Targeted) ---
-    socket.on('webrtc-offer', ({ offer, toId }) => {
-        io.to(toId).emit('webrtc-offer', { offer, fromId: socket.id });
+    socket.on('webrtc-offer', ({ offer, toId, fromId }) => {
+        // Also notify the room who is sharing now for the UI update
+        if(socket.roomCode) {
+            io.to(socket.roomCode).emit('sharer-started', { sharerId: fromId });
+        }
+        io.to(toId).emit('webrtc-offer', { offer, fromId: fromId });
     });
 
     socket.on('webrtc-answer', ({ answer, toId }) => {
@@ -105,12 +123,6 @@ io.on('connection', (socket) => {
         io.to(toId).emit('webrtc-candidate', { candidate, fromId: socket.id });
     });
     
-    socket.on('stop-sharing', ({room}) => {
-        if(room && rooms[room]){
-            io.to(room).emit('share-stopped');
-        }
-    });
-
     // --- Chat Logic ---
     socket.on('send-chat-message', ({ message }) => {
         if (socket.roomCode && socket.username) {
@@ -127,16 +139,15 @@ io.on('connection', (socket) => {
         console.log('User disconnected:', socket.id);
         const roomCode = socket.roomCode;
         if (roomCode && rooms[roomCode]) {
-            // Remove user from room by their socket id
+            // Find the user who disconnected
             const disconnectedUser = rooms[roomCode].find(user => user.id === socket.id);
+            
+            // Remove user from the room's array
             rooms[roomCode] = rooms[roomCode].filter(user => user.id !== socket.id);
             
-            // Announce that the user has left
             if (disconnectedUser) {
-                 io.to(roomCode).emit('new-chat-message', { 
-                    username: 'System', 
-                    message: `${disconnectedUser.username} has left the room.`
-                });
+                // Notify remaining users that this user has left
+                socket.to(roomCode).emit('user-left', disconnectedUser);
             }
 
             // If room is empty, delete it
@@ -146,7 +157,8 @@ io.on('connection', (socket) => {
             } else {
                 // Otherwise, update the user list for remaining users
                 io.to(roomCode).emit('update-user-list', rooms[roomCode]);
-                io.to(roomCode).emit('share-stopped'); // also stop sharing if sharer disconnects
+                // If the person who disconnected was the one sharing, notify everyone
+                io.to(roomCode).emit('share-stopped'); 
             }
         }
     });
@@ -155,5 +167,4 @@ io.on('connection', (socket) => {
 server.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`);
 });
-
 
