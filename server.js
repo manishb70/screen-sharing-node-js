@@ -16,30 +16,33 @@ app.get('/', (req, res) => {
 });
 
 // In-memory store for rooms
+// Now stores an array of user objects {id, username}
 const rooms = {};
 
 io.on('connection', (socket) => {
     console.log('A user connected:', socket.id);
 
     // --- Room Management ---
-    socket.on('create-room', () => {
+    socket.on('create-room', ({ username }) => {
         const roomCode = nanoid(6); // Generate a 6-character room code
-        rooms[roomCode] = [socket.id];
+        rooms[roomCode] = [{ id: socket.id, username: username }];
         socket.join(roomCode);
         socket.roomCode = roomCode; // Store room code on socket object
+        socket.username = username; // Store username on socket object
         socket.emit('room-created', roomCode);
         io.to(roomCode).emit('update-user-list', rooms[roomCode]);
-        console.log(`Room ${roomCode} created by ${socket.id}`);
+        console.log(`Room ${roomCode} created by ${username} (${socket.id})`);
     });
 
-    socket.on('join-room', (roomCode) => {
+    socket.on('join-room', ({ roomCode, username }) => {
         if (rooms[roomCode]) {
-            rooms[roomCode].push(socket.id);
+            rooms[roomCode].push({ id: socket.id, username: username });
             socket.join(roomCode);
             socket.roomCode = roomCode;
+            socket.username = username;
             socket.emit('joined-room', roomCode);
             io.to(roomCode).emit('update-user-list', rooms[roomCode]);
-            console.log(`${socket.id} joined room ${roomCode}`);
+            console.log(`${username} (${socket.id}) joined room ${roomCode}`);
         } else {
             socket.emit('join-error', 'Invalid room code.');
         }
@@ -47,13 +50,35 @@ io.on('connection', (socket) => {
 
     // --- Share Request Flow ---
     socket.on('request-share', ({ targetId }) => {
-        console.log(`${socket.id} is requesting to view ${targetId}'s screen`);
-        io.to(targetId).emit('share-request-received', { requesterId: socket.id });
+        console.log(`${socket.username} (${socket.id}) is requesting to view ${targetId}'s screen`);
+        io.to(targetId).emit('share-request-received', { requesterId: socket.id, requesterUsername: socket.username });
     });
 
     socket.on('reject-share', ({ requesterId }) => {
-        console.log(`${socket.id} rejected share request from ${requesterId}`);
-        io.to(requesterId).emit('share-rejected', { rejecterId: socket.id });
+        const targetSocket = io.sockets.sockets.get(requesterId);
+        if (targetSocket) {
+             console.log(`${socket.username} (${socket.id}) rejected share request from ${targetSocket.username}`);
+             targetSocket.emit('share-rejected', { rejecterId: socket.id, rejecterUsername: socket.username });
+        }
+    });
+    
+    // --- Remote Control Flow ---
+    socket.on('request-control', ({ targetId }) => {
+        console.log(`${socket.username} requests control from ${targetId}`);
+        io.to(targetId).emit('control-request-received', { requesterId: socket.id, requesterUsername: socket.username });
+    });
+
+    socket.on('accept-control', ({ requesterId }) => {
+        console.log(`${socket.username} accepted control from ${requesterId}`);
+        io.to(requesterId).emit('control-accepted', { targetId: socket.id });
+    });
+
+    socket.on('reject-control', ({ requesterId }) => {
+         const targetSocket = io.sockets.sockets.get(requesterId);
+        if(targetSocket) {
+            console.log(`${socket.username} rejected control from ${requesterId}`);
+            targetSocket.emit('control-rejected', { rejecterUsername: socket.username });
+        }
     });
     
     // --- WebRTC Signaling (Targeted) ---
@@ -75,13 +100,34 @@ io.on('connection', (socket) => {
         }
     });
 
+    // --- Chat Logic ---
+    socket.on('send-chat-message', ({ message }) => {
+        if (socket.roomCode && socket.username) {
+            // Broadcast the message to everyone in the same room
+            io.to(socket.roomCode).emit('new-chat-message', { 
+                username: socket.username, 
+                message: message 
+            });
+        }
+    });
+
     // --- Disconnect Handling ---
     socket.on('disconnect', () => {
         console.log('User disconnected:', socket.id);
         const roomCode = socket.roomCode;
         if (roomCode && rooms[roomCode]) {
-            // Remove user from room
-            rooms[roomCode] = rooms[roomCode].filter(id => id !== socket.id);
+            // Remove user from room by their socket id
+            const disconnectedUser = rooms[roomCode].find(user => user.id === socket.id);
+            rooms[roomCode] = rooms[roomCode].filter(user => user.id !== socket.id);
+            
+            // Announce that the user has left
+            if (disconnectedUser) {
+                 io.to(roomCode).emit('new-chat-message', { 
+                    username: 'System', 
+                    message: `${disconnectedUser.username} has left the room.`
+                });
+            }
+
             // If room is empty, delete it
             if (rooms[roomCode].length === 0) {
                 delete rooms[roomCode];
@@ -98,3 +144,4 @@ io.on('connection', (socket) => {
 server.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`);
 });
+
